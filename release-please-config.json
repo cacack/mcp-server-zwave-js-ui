@@ -1,0 +1,10 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "python",
+      "extra-files": [
+        "src/zwave_js_ui_mcp/__init__.py"
+      ]
+    }
+  }
+}
