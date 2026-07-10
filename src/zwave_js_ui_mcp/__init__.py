@@ -1,3 +1,3 @@
 """MCP server for Z-Wave device management via zwave-js-server."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"  # x-release-please-version
