@@ -57,7 +57,7 @@ def _node(node_id=5, **overrides) -> SimpleNamespace:
         "product_type": 2,
         "manufacturer_id": 3,
         "hardware_version": 1,
-        "protocol_version": "1.0",
+        "protocol_version": 3,
         "highest_security_class": "S2_Authenticated",
         "is_frequent_listening": False,
         "in_interview": False,
@@ -106,10 +106,10 @@ def _config_value(prop=1, **overrides) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-def _driver(nodes) -> SimpleNamespace:
-    controller = SimpleNamespace(
+def _driver(nodes, **overrides) -> SimpleNamespace:
+    base = dict(
         home_id=0xABCD,
-        controller_type="Static Controller",
+        controller_type=1,
         sdk_version="7.0",
         zwave_api_version="1.0",
         firmware_version="1.0",
@@ -121,7 +121,8 @@ def _driver(nodes) -> SimpleNamespace:
         status="Ready",
         nodes={n.node_id: n for n in nodes},
     )
-    return SimpleNamespace(controller=controller)
+    base.update(overrides)
+    return SimpleNamespace(controller=SimpleNamespace(**base))
 
 
 def test_get_node_found():
@@ -143,6 +144,34 @@ def test_project_controller_counts_ready_nodes():
     assert result["node_count"] == 2
     assert result["nodes_ready"] == 1
     assert result["is_primary"] is True
+
+
+def test_project_controller_labels_controller_type():
+    result = client.project_controller(_driver([]))
+    assert result["controller_type"] == {"value": 1, "label": "Static Controller"}
+
+
+def test_project_controller_labels_unknown_controller_type():
+    result = client.project_controller(_driver([], controller_type=99))
+    assert result["controller_type"] == {"value": 99, "label": None}
+
+
+def test_project_controller_handles_none_controller_type():
+    result = client.project_controller(_driver([], controller_type=None))
+    assert result["controller_type"] is None
+
+
+def test_project_node_detail_labels_protocol_version():
+    result = client.project_node_detail(_node())
+    assert result["protocol_version"] == {
+        "value": 3,
+        "label": "VERSION_4_5X_OR_6_0X",
+    }
+
+
+def test_project_node_detail_handles_none_protocol_version():
+    result = client.project_node_detail(_node(protocol_version=None))
+    assert result["protocol_version"] is None
 
 
 def test_project_node_summary_serializes_status_enum():

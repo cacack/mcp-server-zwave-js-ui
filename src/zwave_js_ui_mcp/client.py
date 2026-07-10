@@ -22,6 +22,7 @@ from typing import Any
 
 import aiohttp
 from zwave_js_server.client import Client
+from zwave_js_server.const import ProtocolVersion
 from zwave_js_server.model.driver import Driver
 from zwave_js_server.model.node import Node
 
@@ -30,6 +31,28 @@ DEFAULT_URL = "ws://localhost:3000"
 # Configuration command class; its values are surfaced by the dedicated config
 # tool, so the generic value listing filters them out to avoid duplication.
 _CONFIGURATION_CC = 112
+
+# protocol_version comes off the wire as a plain int; the library models the
+# meaning as an enum, so derive the label table from it rather than copy it.
+_PROTOCOL_VERSION_LABELS = {v.value: v.name for v in ProtocolVersion}
+
+# controller_type is a raw int with no enum in zwave-js-server-python, so mirror
+# node-zwave-js's ZWaveLibraryTypes here (sequential 0..11).
+# https://github.com/zwave-js/zwave-js/blob/master/packages/core/src/definitions/LibraryTypes.ts
+_CONTROLLER_TYPE_LABELS = {
+    0: "Unknown",
+    1: "Static Controller",
+    2: "Controller",
+    3: "Enhanced Slave",
+    4: "Slave",
+    5: "Installer",
+    6: "Routing Slave",
+    7: "Bridge Controller",
+    8: "Device under Test",
+    9: "N/A",
+    10: "AV Remote",
+    11: "AV Device",
+}
 
 # Bound the wait for the initial full-state dump so a wedged or wrong-URL
 # connection fails fast instead of hanging the MCP tool call.
@@ -98,13 +121,20 @@ def _device_class_item(item: Any) -> str | None:
     return getattr(item, "label", None) if item is not None else None
 
 
+def _labeled(value: int | None, labels: dict[int, str]) -> dict | None:
+    """Wrap a raw enum int as {value, label}; label is None for unknown ints."""
+    if value is None:
+        return None
+    return {"value": value, "label": labels.get(value)}
+
+
 def project_controller(driver: Driver) -> dict:
     """Controller / network summary."""
     c = driver.controller
     nodes = c.nodes.values()
     return {
         "home_id": c.home_id,
-        "controller_type": c.controller_type,
+        "controller_type": _labeled(c.controller_type, _CONTROLLER_TYPE_LABELS),
         "sdk_version": c.sdk_version,
         "zwave_api_version": c.zwave_api_version,
         "firmware_version": c.firmware_version,
@@ -148,9 +178,7 @@ def project_node_detail(node: Node) -> dict:
         "product_type": node.product_type,
         "manufacturer_id": node.manufacturer_id,
         "hardware_version": node.hardware_version,
-        "protocol_version": getattr(
-            node.protocol_version, "name", node.protocol_version
-        ),
+        "protocol_version": _labeled(node.protocol_version, _PROTOCOL_VERSION_LABELS),
         "highest_security_class": getattr(
             node.highest_security_class, "name", node.highest_security_class
         ),
