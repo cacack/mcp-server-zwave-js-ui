@@ -1,5 +1,10 @@
 # mcp-server-zwave-js-ui
 
+[![PyPI](https://img.shields.io/pypi/v/mcp-server-zwave-js-ui.svg)](https://pypi.org/project/mcp-server-zwave-js-ui/)
+[![Python versions](https://img.shields.io/pypi/pyversions/mcp-server-zwave-js-ui.svg)](https://pypi.org/project/mcp-server-zwave-js-ui/)
+[![CI](https://github.com/cacack/mcp-server-zwave-js-ui/actions/workflows/ci.yml/badge.svg)](https://github.com/cacack/mcp-server-zwave-js-ui/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/pypi/l/mcp-server-zwave-js-ui.svg)](LICENSE)
+
 An [MCP](https://modelcontextprotocol.io/) server for managing a Z-Wave network
 through [Z-Wave JS UI](https://github.com/zwave-js/zwave-js-ui). It connects to
 the `zwave-js-server` WebSocket that Z-Wave JS UI exposes and surfaces the mesh
@@ -9,6 +14,29 @@ client (e.g. Claude) can call.
 > **Status: early / read-only.** This first release covers read-only
 > introspection. Write control and administrative operations are on the
 > roadmap — see [Roadmap](#roadmap).
+
+## Quickstart
+
+1. In Z-Wave JS UI, make sure the **Z-Wave JS Server** WebSocket is enabled
+   (Settings → Home Assistant → *WS Server*; default port `3000`). See
+   [What it connects to](#what-it-connects-to).
+2. Add the server to Claude Code, pointing `ZWAVE_JS_URL` at that WebSocket.
+   No manual install needed — `uvx` fetches and runs the published package:
+
+   ```bash
+   claude mcp add zwave-js-ui \
+     --env ZWAVE_JS_URL=ws://<host>:3000 \
+     -- uvx mcp-server-zwave-js-ui
+   ```
+
+3. Ask Claude about your mesh — it calls the read-only [tools](#tools) to answer:
+
+   > *"Which Z-Wave controller am I running, and how many nodes are on the network?"*
+   >
+   > *"List my Z-Wave nodes and flag any that are dead or asleep."*
+
+For other MCP clients, isolated installs, and configuration details, see the
+sections below.
 
 ## What it connects to
 
