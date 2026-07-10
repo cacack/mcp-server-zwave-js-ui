@@ -23,7 +23,8 @@ async def zwave_controller_info() -> dict:
 
     Returns the controller's home id, type, SDK/API/firmware versions, RF
     region, primary/inclusion state, and node counts. Use this first for a
-    quick health snapshot of the mesh.
+    quick health snapshot of the mesh. `controller_type` is a
+    {"value": int, "label": str} object (label is null for an unmapped code).
     """
     async with client.connected_driver() as driver:
         return client.project_controller(driver)
@@ -51,7 +52,9 @@ async def zwave_node_info(node_id: int) -> dict:
 
     Includes device class, supported command classes, endpoint count, security
     class, protocol version, last-seen time, and signal statistics, on top of
-    the summary fields. Raises ValueError if the node id is unknown.
+    the summary fields. `protocol_version` is a {"value": int, "label": str}
+    object (label is null for an unmapped code). Raises ValueError if the node
+    id is unknown.
 
     Args:
         node_id: The Z-Wave node id, e.g. 5
