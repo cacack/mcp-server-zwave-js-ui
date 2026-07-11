@@ -10,8 +10,10 @@ from __future__ import annotations
 
 from enum import Enum
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from zwave_js_server.const import InclusionStrategy
 
 from zwave_js_ui_mcp import client
 
@@ -238,3 +240,293 @@ def test_server_url_defaults(monkeypatch):
 def test_server_url_from_env(monkeypatch):
     monkeypatch.setenv("ZWAVE_JS_URL", "ws://borg:3002")
     assert client.server_url() == "ws://borg:3002"
+
+
+# --- Read-only gate ---
+
+
+def test_read_only_unset_is_false(monkeypatch):
+    monkeypatch.delenv("ZWAVE_JS_READ_ONLY", raising=False)
+    assert client.read_only() is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "Yes", "on"])
+def test_read_only_truthy_values(monkeypatch, value):
+    monkeypatch.setenv("ZWAVE_JS_READ_ONLY", value)
+    assert client.read_only() is True
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no"])
+def test_read_only_falsey_values(monkeypatch, value):
+    monkeypatch.setenv("ZWAVE_JS_READ_ONLY", value)
+    assert client.read_only() is False
+
+
+def test_ensure_writable_passes_when_unset(monkeypatch):
+    monkeypatch.delenv("ZWAVE_JS_READ_ONLY", raising=False)
+    client.ensure_writable()  # does not raise
+
+
+def test_ensure_writable_raises_when_read_only(monkeypatch):
+    monkeypatch.setenv("ZWAVE_JS_READ_ONLY", "1")
+    with pytest.raises(PermissionError, match="ZWAVE_JS_READ_ONLY"):
+        client.ensure_writable()
+
+
+# --- Result projections ---
+
+
+def test_project_set_value_result_maps_status():
+    result = SimpleNamespace(
+        status=SimpleNamespace(name="SUCCESS"), message=None, remaining_duration=None
+    )
+    assert client.project_set_value_result(result) == {
+        "status": "SUCCESS",
+        "message": None,
+        "remaining_duration": None,
+    }
+
+
+def test_project_set_value_result_stringifies_remaining_duration():
+    result = SimpleNamespace(
+        status=SimpleNamespace(name="WORKING"), message=None, remaining_duration="10s"
+    )
+    assert client.project_set_value_result(result)["remaining_duration"] == "10s"
+
+
+def test_project_set_value_result_none_is_queued():
+    assert client.project_set_value_result(None) == {
+        "status": "QUEUED",
+        "message": None,
+        "remaining_duration": None,
+    }
+
+
+def test_project_set_config_result_without_supervision():
+    result = SimpleNamespace(status=SimpleNamespace(name="ACCEPTED"), result=None)
+    assert client.project_set_config_result(result) == {
+        "status": "ACCEPTED",
+        "supervision": None,
+    }
+
+
+def test_project_set_config_result_with_supervision():
+    result = SimpleNamespace(
+        status=SimpleNamespace(name="ACCEPTED"),
+        result=SimpleNamespace(status=SimpleNamespace(name="SUCCESS")),
+    )
+    assert client.project_set_config_result(result)["supervision"] == "SUCCESS"
+
+
+def test_project_association_group():
+    group = SimpleNamespace(
+        max_nodes=5,
+        is_lifeline=True,
+        multi_channel=False,
+        label="Lifeline",
+        profile=None,
+    )
+    assert client.project_association_group(group) == {
+        "max_nodes": 5,
+        "is_lifeline": True,
+        "multi_channel": False,
+        "label": "Lifeline",
+        "profile": None,
+    }
+
+
+def test_project_association_address():
+    addr = SimpleNamespace(node_id=7, endpoint=2)
+    assert client.project_association_address(addr) == {"node_id": 7, "endpoint": 2}
+
+
+# --- Actions ---
+
+
+def _action_driver(node_id=5, controller=None, **node_methods):
+    """Driver whose node and controller carry AsyncMock command methods."""
+    node = SimpleNamespace(node_id=node_id, **node_methods)
+    controller = controller or SimpleNamespace()
+    controller.nodes = {node_id: node}
+    return SimpleNamespace(controller=controller), node
+
+
+async def test_set_value_delegates_and_projects():
+    driver, node = _action_driver(
+        async_set_value=AsyncMock(
+            return_value=SimpleNamespace(
+                status=SimpleNamespace(name="SUCCESS"),
+                message=None,
+                remaining_duration=None,
+            )
+        )
+    )
+    result = await client.set_value(driver, 5, "5-38-0-targetValue", 99)
+    assert result["status"] == "SUCCESS"
+    node.async_set_value.assert_awaited_once_with(
+        "5-38-0-targetValue", 99, wait_for_result=True
+    )
+
+
+async def test_set_value_unknown_node_raises():
+    driver, _ = _action_driver()
+    with pytest.raises(ValueError, match="No node with id 99"):
+        await client.set_value(driver, 99, "x", 1)
+
+
+async def test_set_config_parameter_delegates_and_projects():
+    driver, node = _action_driver(
+        async_set_raw_config_parameter_value=AsyncMock(
+            return_value=SimpleNamespace(
+                status=SimpleNamespace(name="ACCEPTED"), result=None
+            )
+        )
+    )
+    result = await client.set_config_parameter(driver, 5, 3, 10, bitmask=None)
+    assert result == {"status": "ACCEPTED", "supervision": None}
+    node.async_set_raw_config_parameter_value.assert_awaited_once_with(10, 3, None)
+
+
+async def test_get_association_groups_projects_each():
+    controller = SimpleNamespace(
+        async_get_association_groups=AsyncMock(
+            return_value={
+                1: SimpleNamespace(
+                    max_nodes=5,
+                    is_lifeline=True,
+                    multi_channel=False,
+                    label="Lifeline",
+                    profile=None,
+                )
+            }
+        )
+    )
+    driver, _ = _action_driver(controller=controller)
+    result = await client.get_association_groups(driver, 5)
+    assert result[1]["label"] == "Lifeline"
+    source = controller.async_get_association_groups.await_args.args[0]
+    assert source.node_id == 5
+
+
+async def test_get_associations_projects_targets():
+    controller = SimpleNamespace(
+        async_get_associations=AsyncMock(
+            return_value={1: [SimpleNamespace(node_id=8, endpoint=None)]}
+        )
+    )
+    driver, _ = _action_driver(controller=controller)
+    result = await client.get_associations(driver, 5)
+    assert result == {1: [{"node_id": 8, "endpoint": None}]}
+
+
+async def test_add_association_delegates():
+    controller = SimpleNamespace(async_add_associations=AsyncMock(return_value=None))
+    driver, _ = _action_driver(controller=controller)
+    result = await client.add_association(driver, 5, 2, 8)
+    assert result == {"status": "added", "node_id": 5, "group": 2}
+    call = controller.async_add_associations.await_args
+    assert call.args[1] == 2  # group
+    assert call.args[2][0].node_id == 8  # target
+    assert call.kwargs["wait_for_result"] is True
+
+
+async def test_remove_association_delegates():
+    controller = SimpleNamespace(async_remove_associations=AsyncMock(return_value=None))
+    driver, _ = _action_driver(controller=controller)
+    result = await client.remove_association(driver, 5, 2, 8)
+    assert result == {"status": "removed", "node_id": 5, "group": 2}
+    controller.async_remove_associations.assert_awaited_once()
+
+
+async def test_reinterview_node_delegates():
+    driver, node = _action_driver(async_refresh_info=AsyncMock(return_value=None))
+    result = await client.reinterview_node(driver, 5)
+    assert result == {"status": "started", "node_id": 5}
+    node.async_refresh_info.assert_awaited_once()
+
+
+async def test_rebuild_node_routes_reports_success():
+    controller = SimpleNamespace(async_rebuild_node_routes=AsyncMock(return_value=True))
+    driver, node = _action_driver(controller=controller)
+    result = await client.rebuild_node_routes(driver, 5)
+    assert result == {"node_id": 5, "success": True}
+    controller.async_rebuild_node_routes.assert_awaited_once_with(node)
+
+
+async def test_begin_rebuilding_routes():
+    controller = SimpleNamespace(
+        async_begin_rebuilding_routes=AsyncMock(return_value=True)
+    )
+    driver, _ = _action_driver(controller=controller)
+    assert await client.begin_rebuilding_routes(driver) == {
+        "status": "started",
+        "success": True,
+    }
+
+
+async def test_stop_rebuilding_routes():
+    controller = SimpleNamespace(
+        async_stop_rebuilding_routes=AsyncMock(return_value=True)
+    )
+    driver, _ = _action_driver(controller=controller)
+    assert await client.stop_rebuilding_routes(driver) == {
+        "status": "stopped",
+        "success": True,
+    }
+
+
+async def test_remove_failed_node_delegates():
+    controller = SimpleNamespace(async_remove_failed_node=AsyncMock(return_value=None))
+    driver, node = _action_driver(controller=controller)
+    result = await client.remove_failed_node(driver, 5)
+    assert result == {"status": "removed", "node_id": 5}
+    controller.async_remove_failed_node.assert_awaited_once_with(node)
+
+
+async def test_begin_inclusion_maps_strategy():
+    controller = SimpleNamespace(async_begin_inclusion=AsyncMock(return_value=True))
+    driver, _ = _action_driver(controller=controller)
+    result = await client.begin_inclusion(driver, "s2")
+    assert result == {
+        "status": "inclusion_started",
+        "strategy": "s2",
+        "success": True,
+    }
+    controller.async_begin_inclusion.assert_awaited_once_with(
+        InclusionStrategy.SECURITY_S2
+    )
+
+
+async def test_begin_inclusion_rejects_unknown_strategy():
+    controller = SimpleNamespace(async_begin_inclusion=AsyncMock())
+    driver, _ = _action_driver(controller=controller)
+    with pytest.raises(ValueError, match="Unknown inclusion strategy"):
+        await client.begin_inclusion(driver, "bogus")
+    controller.async_begin_inclusion.assert_not_awaited()
+
+
+async def test_stop_inclusion():
+    controller = SimpleNamespace(async_stop_inclusion=AsyncMock(return_value=True))
+    driver, _ = _action_driver(controller=controller)
+    assert await client.stop_inclusion(driver) == {
+        "status": "inclusion_stopped",
+        "success": True,
+    }
+
+
+async def test_begin_exclusion():
+    controller = SimpleNamespace(async_begin_exclusion=AsyncMock(return_value=True))
+    driver, _ = _action_driver(controller=controller)
+    assert await client.begin_exclusion(driver) == {
+        "status": "exclusion_started",
+        "success": True,
+    }
+
+
+async def test_stop_exclusion():
+    controller = SimpleNamespace(async_stop_exclusion=AsyncMock(return_value=True))
+    driver, _ = _action_driver(controller=controller)
+    assert await client.stop_exclusion(driver) == {
+        "status": "exclusion_stopped",
+        "success": True,
+    }

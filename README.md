@@ -11,9 +11,11 @@ the `zwave-js-server` WebSocket that Z-Wave JS UI exposes and surfaces the mesh
 — controller, nodes, values, and configuration parameters — as tools an MCP
 client (e.g. Claude) can call.
 
-> **Status: early / read-only.** This first release covers read-only
-> introspection. Write control and administrative operations are on the
-> roadmap — see [Roadmap](#roadmap).
+> **Status: early / read + write + lifecycle.** Read-only introspection, write
+> control (values, config parameters, associations), and admin/lifecycle
+> operations (re-interview, route rebuild, inclusion/exclusion, remove failed
+> node) are available. Set `ZWAVE_JS_READ_ONLY` to lock the server to the
+> read-only tools. OTA firmware update is still on the [roadmap](#roadmap).
 
 ## Quickstart
 
@@ -58,9 +60,10 @@ uvx mcp-server-zwave-js-ui
 
 ## Configure
 
-| Variable       | Default                 | Description                                  |
-|----------------|-------------------------|----------------------------------------------|
-| `ZWAVE_JS_URL` | `ws://localhost:3000`   | WebSocket URL of the Z-Wave JS Server.       |
+| Variable             | Default               | Description                                                        |
+|----------------------|-----------------------|--------------------------------------------------------------------|
+| `ZWAVE_JS_URL`       | `ws://localhost:3000` | WebSocket URL of the Z-Wave JS Server.                             |
+| `ZWAVE_JS_READ_ONLY` | *(unset)*             | Set to `1`/`true`/`yes`/`on` to disable all write and admin tools. |
 
 ## Use with Claude Code
 
@@ -86,6 +89,11 @@ Or add it to an MCP client config directly:
 
 ## Tools
 
+Write and admin tools (everything below the read-only rows) are gated by
+`ZWAVE_JS_READ_ONLY`; with it set they refuse before touching the network.
+
+### Read-only
+
 | Tool                     | Description                                                        |
 |--------------------------|-------------------------------------------------------------------|
 | `zwave_controller_info`  | Controller and network summary (home id, versions, RF region, node counts). |
@@ -93,11 +101,38 @@ Or add it to an MCP client config directly:
 | `zwave_node_info`        | Full detail for a node (device class, command classes, endpoints, signal). |
 | `zwave_node_values`      | A node's current values, excluding configuration parameters.      |
 | `zwave_node_config`      | A node's configuration parameters with current values and metadata. |
+| `zwave_association_groups` | A node's association groups and their capabilities.             |
+| `zwave_associations`     | A node's current associations, keyed by group.                    |
+
+### Write control (level 2)
+
+| Tool                       | Description                                                      |
+|----------------------------|------------------------------------------------------------------|
+| `zwave_set_value`          | Set a value by id (on/off/dim/etc.) and report the command outcome. |
+| `zwave_set_config_parameter` | Set a manufacturer configuration parameter (optional bit mask). |
+| `zwave_add_association`    | Associate a target node into a source node's group.             |
+| `zwave_remove_association` | Remove a target node from a source node's group.                |
+
+### Admin / lifecycle (level 3)
+
+| Tool                          | Description                                                   |
+|-------------------------------|---------------------------------------------------------------|
+| `zwave_reinterview_node`      | Re-run a node's interview to refresh capabilities and values. |
+| `zwave_rebuild_node_routes`   | Rebuild mesh routes for a single node.                        |
+| `zwave_begin_rebuilding_routes` / `zwave_stop_rebuilding_routes` | Start/stop a network-wide route rebuild (heal). |
+| `zwave_remove_failed_node`    | Remove a controller-flagged failed node from the network.     |
+| `zwave_begin_inclusion` / `zwave_stop_inclusion` | Enter/leave inclusion mode to add a node.  |
+| `zwave_begin_exclusion` / `zwave_stop_exclusion` | Enter/leave exclusion mode to remove a node. |
+
+> **Note on secure inclusion:** interactive S2 security bootstrap (DSK/PIN
+> grant) can't complete through this stateless server — use the Z-Wave JS UI
+> for secure inclusion.
 
 ## Roadmap
 
-- **Level 2 — read/write:** set values (on/off/dim), set configuration parameters, manage association groups. Mutating tools will be gated behind a `ZWAVE_JS_READ_ONLY` flag.
-- **Level 3 — admin/lifecycle:** inclusion/exclusion, re-interview, network heal / rebuild routes, OTA firmware update.
+- **OTA firmware update.** Firmware flashing streams progress events over
+  minutes, which the per-call connection model can't observe within a single
+  tool call; delivering it needs a persistent-connection design.
 
 ## Development
 

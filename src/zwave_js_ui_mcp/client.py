@@ -1,15 +1,21 @@
-"""Connection to zwave-js-server and read-only projections of its state.
+"""Connection to zwave-js-server, plus projections of and actions on its state.
 
 The whole backend is isolated here: `server.py` only ever touches the plain
-dicts these functions return, never a library object. That keeps the MCP tool
-layer independent of the `zwave-js-server-python` object model, so the
-transport can be swapped without touching the tools.
+dicts these functions return (and the action functions they delegate to),
+never a library object. That keeps the MCP tool layer independent of the
+`zwave-js-server-python` object model, so the transport can be swapped without
+touching the tools.
 
 Connection model (per call, matching the stateless MCP tool style): open an
 aiohttp session, connect the client (which negotiates the protocol schema),
 run `client.listen()` as a background task — it issues `start_listening`,
 populates `client.driver` with the full network state, and fires the
 `driver_ready` event — then read the driver and tear everything down.
+
+Mutating actions (set value/config, associations, lifecycle) live alongside
+the read-only projections. They are gated by `ensure_writable()`, which the
+tool layer calls before opening a connection, so an operator can lock the
+server to read-only with the `ZWAVE_JS_READ_ONLY` env var.
 """
 
 from __future__ import annotations
@@ -22,7 +28,8 @@ from typing import Any
 
 import aiohttp
 from zwave_js_server.client import Client
-from zwave_js_server.const import ProtocolVersion
+from zwave_js_server.const import InclusionStrategy, ProtocolVersion
+from zwave_js_server.model.association import AssociationAddress
 from zwave_js_server.model.driver import Driver
 from zwave_js_server.model.node import Node
 
@@ -58,10 +65,39 @@ _CONTROLLER_TYPE_LABELS = {
 # connection fails fast instead of hanging the MCP tool call.
 _CONNECT_TIMEOUT = 30.0
 
+# Env values that count as "on" for the read-only lockdown flag.
+_TRUTHY = {"1", "true", "yes", "on"}
+
+# Inclusion strategies exposed to callers as short strings. SMART_START is
+# omitted: it needs QR/provisioning data that doesn't fit a stateless call.
+_INCLUSION_STRATEGIES = {
+    "default": InclusionStrategy.DEFAULT,
+    "s2": InclusionStrategy.SECURITY_S2,
+    "s0": InclusionStrategy.SECURITY_S0,
+    "insecure": InclusionStrategy.INSECURE,
+}
+
 
 def server_url() -> str:
     """WebSocket URL of the zwave-js-server, from ZWAVE_JS_URL."""
     return os.environ.get("ZWAVE_JS_URL", DEFAULT_URL)
+
+
+def read_only() -> bool:
+    """Whether mutating tools are disabled, per ZWAVE_JS_READ_ONLY."""
+    return os.environ.get("ZWAVE_JS_READ_ONLY", "").strip().lower() in _TRUTHY
+
+
+def ensure_writable() -> None:
+    """Raise PermissionError if the server is locked to read-only mode.
+
+    Called by mutating tools before they open a connection, so a lockdown
+    refuses fast and never touches the network.
+    """
+    if read_only():
+        raise PermissionError(
+            "mutating operations are disabled: ZWAVE_JS_READ_ONLY is set"
+        )
 
 
 @asynccontextmanager
@@ -260,3 +296,216 @@ def project_config_value(cv: Any) -> dict:
 def project_node_config(node: Node) -> list[dict]:
     """All configuration parameters for a node."""
     return [project_config_value(cv) for cv in node.get_configuration_values().values()]
+
+
+# --- Result projections: library result objects -> plain dicts ---
+
+
+def project_set_value_result(result: Any) -> dict:
+    """Outcome of a setValue command as a plain dict.
+
+    `result` is a library SetValueResult, or None when the server returns no
+    result (the command was queued for a sleeping node).
+    """
+    if result is None:
+        return {"status": "QUEUED", "message": None, "remaining_duration": None}
+    remaining = getattr(result, "remaining_duration", None)
+    return {
+        "status": result.status.name,
+        "message": result.message,
+        "remaining_duration": str(remaining) if remaining is not None else None,
+    }
+
+
+def project_set_config_result(result: Any) -> dict:
+    """Outcome of a setRawConfigParameterValue command as a plain dict."""
+    inner = getattr(result, "result", None)
+    supervision = getattr(getattr(inner, "status", None), "name", None)
+    return {"status": result.status.name, "supervision": supervision}
+
+
+def project_association_group(group: Any) -> dict:
+    """An association group's capabilities."""
+    return {
+        "max_nodes": group.max_nodes,
+        "is_lifeline": group.is_lifeline,
+        "multi_channel": group.multi_channel,
+        "label": group.label,
+        "profile": group.profile,
+    }
+
+
+def project_association_address(address: Any) -> dict:
+    """A single association target (node + optional endpoint)."""
+    return {"node_id": address.node_id, "endpoint": address.endpoint}
+
+
+# --- Actions: mutate the network, return a plain dict describing the outcome ---
+
+
+async def set_value(
+    driver: Driver, node_id: int, value_id: str, new_value: Any
+) -> dict:
+    """Set a node value by value_id and report the command outcome.
+
+    Raises ValueError if the node id is unknown; the library raises if the
+    value_id is not found on the node or is not writeable.
+    """
+    node = get_node(driver, node_id)
+    result = await node.async_set_value(value_id, new_value, wait_for_result=True)
+    return project_set_value_result(result)
+
+
+async def set_config_parameter(
+    driver: Driver,
+    node_id: int,
+    parameter: int,
+    new_value: int,
+    bitmask: int | None = None,
+) -> dict:
+    """Set a manufacturer configuration parameter and report the outcome.
+
+    `parameter` is the parameter number (the `property` field from
+    project_node_config); `bitmask` is the optional partial-parameter bit mask
+    (its `property_key`). Raises ValueError if the node id is unknown.
+    """
+    node = get_node(driver, node_id)
+    result = await node.async_set_raw_config_parameter_value(
+        new_value, parameter, bitmask
+    )
+    return project_set_config_result(result)
+
+
+async def get_association_groups(
+    driver: Driver, node_id: int, endpoint: int | None = None
+) -> dict:
+    """List a node endpoint's association groups, keyed by group id."""
+    get_node(driver, node_id)
+    source = AssociationAddress(driver.controller, node_id=node_id, endpoint=endpoint)
+    groups = await driver.controller.async_get_association_groups(source)
+    return {gid: project_association_group(g) for gid, g in groups.items()}
+
+
+async def get_associations(
+    driver: Driver, node_id: int, endpoint: int | None = None
+) -> dict:
+    """List a node endpoint's current associations, keyed by group id."""
+    get_node(driver, node_id)
+    source = AssociationAddress(driver.controller, node_id=node_id, endpoint=endpoint)
+    associations = await driver.controller.async_get_associations(source)
+    return {
+        gid: [project_association_address(a) for a in addrs]
+        for gid, addrs in associations.items()
+    }
+
+
+async def add_association(
+    driver: Driver,
+    node_id: int,
+    group: int,
+    target_node_id: int,
+    source_endpoint: int | None = None,
+    target_endpoint: int | None = None,
+) -> dict:
+    """Add `target_node_id` to a source node's association group."""
+    get_node(driver, node_id)
+    source = AssociationAddress(
+        driver.controller, node_id=node_id, endpoint=source_endpoint
+    )
+    target = AssociationAddress(
+        driver.controller, node_id=target_node_id, endpoint=target_endpoint
+    )
+    await driver.controller.async_add_associations(
+        source, group, [target], wait_for_result=True
+    )
+    return {"status": "added", "node_id": node_id, "group": group}
+
+
+async def remove_association(
+    driver: Driver,
+    node_id: int,
+    group: int,
+    target_node_id: int,
+    source_endpoint: int | None = None,
+    target_endpoint: int | None = None,
+) -> dict:
+    """Remove `target_node_id` from a source node's association group."""
+    get_node(driver, node_id)
+    source = AssociationAddress(
+        driver.controller, node_id=node_id, endpoint=source_endpoint
+    )
+    target = AssociationAddress(
+        driver.controller, node_id=target_node_id, endpoint=target_endpoint
+    )
+    await driver.controller.async_remove_associations(
+        source, group, [target], wait_for_result=True
+    )
+    return {"status": "removed", "node_id": node_id, "group": group}
+
+
+async def reinterview_node(driver: Driver, node_id: int) -> dict:
+    """Re-run a node's interview (refreshInfo). Fire-and-forget."""
+    node = get_node(driver, node_id)
+    await node.async_refresh_info()
+    return {"status": "started", "node_id": node_id}
+
+
+async def rebuild_node_routes(driver: Driver, node_id: int) -> dict:
+    """Rebuild mesh routes for a single node."""
+    node = get_node(driver, node_id)
+    success = await driver.controller.async_rebuild_node_routes(node)
+    return {"node_id": node_id, "success": success}
+
+
+async def begin_rebuilding_routes(driver: Driver) -> dict:
+    """Start a network-wide route rebuild (network heal)."""
+    success = await driver.controller.async_begin_rebuilding_routes()
+    return {"status": "started", "success": success}
+
+
+async def stop_rebuilding_routes(driver: Driver) -> dict:
+    """Stop an in-progress network-wide route rebuild."""
+    success = await driver.controller.async_stop_rebuilding_routes()
+    return {"status": "stopped", "success": success}
+
+
+async def remove_failed_node(driver: Driver, node_id: int) -> dict:
+    """Remove a node the controller has marked failed from the network."""
+    node = get_node(driver, node_id)
+    await driver.controller.async_remove_failed_node(node)
+    return {"status": "removed", "node_id": node_id}
+
+
+async def begin_inclusion(driver: Driver, strategy: str = "default") -> dict:
+    """Put the controller into inclusion mode to add a node.
+
+    Returns as soon as inclusion mode is entered; the physical add and any
+    secure (S2) bootstrap happen afterward via events this stateless call does
+    not observe. Raises ValueError for an unknown strategy.
+    """
+    key = strategy.strip().lower()
+    if key not in _INCLUSION_STRATEGIES:
+        raise ValueError(
+            f"Unknown inclusion strategy {strategy!r}; "
+            f"expected one of {sorted(_INCLUSION_STRATEGIES)}"
+        )
+    success = await driver.controller.async_begin_inclusion(_INCLUSION_STRATEGIES[key])
+    return {"status": "inclusion_started", "strategy": key, "success": success}
+
+
+async def stop_inclusion(driver: Driver) -> dict:
+    """Take the controller out of inclusion mode."""
+    success = await driver.controller.async_stop_inclusion()
+    return {"status": "inclusion_stopped", "success": success}
+
+
+async def begin_exclusion(driver: Driver) -> dict:
+    """Put the controller into exclusion mode to remove a node."""
+    success = await driver.controller.async_begin_exclusion()
+    return {"status": "exclusion_started", "success": success}
+
+
+async def stop_exclusion(driver: Driver) -> dict:
+    """Take the controller out of exclusion mode."""
+    success = await driver.controller.async_stop_exclusion()
+    return {"status": "exclusion_stopped", "success": success}
