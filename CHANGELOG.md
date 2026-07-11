@@ -5,14 +5,12 @@
 
 ### ⚠ BREAKING CHANGES
 
-* zwave_controller_info's `controller_type` and zwave_node_info's `protocol_version` change from a bare int to a
+* zwave_controller_info's `controller_type` and zwave_node_info's `protocol_version` change from a bare int to a `{"value": int, "label": str|null}` object.
 
 ### Features
 
 * add write control and admin/lifecycle tools (levels 2–3) ([1b4a469](https://github.com/cacack/mcp-server-zwave-js-ui/commit/1b4a46949126a3bcf0367ff8aaad38179f960497))
 * close level-2/3 gaps — node name/location, status polls, validation, hide-gate ([c700963](https://github.com/cacack/mcp-server-zwave-js-ui/commit/c700963438ad2da58048f7ed1cb4460dac775f85))
-* close level-2/3 gaps (node name/location, status polls, validation, hide-gate) ([2a0143b](https://github.com/cacack/mcp-server-zwave-js-ui/commit/2a0143b9947bd4aa69f5a271a12b621b15d00020))
-* write control and admin/lifecycle tools (levels 2–3) ([94b8751](https://github.com/cacack/mcp-server-zwave-js-ui/commit/94b875117722d20c96b9013458532c59571299ea))
 
 
 ### Bug Fixes
