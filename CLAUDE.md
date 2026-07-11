@@ -8,9 +8,11 @@ Python MCP server for Z-Wave device management. It connects to the
 exposes the Z-Wave network as MCP tools.
 
 Scope is delivered in levels:
-1. **Read-only** (current) — controller info, node listing/detail, values, config parameters.
-2. **Read/write** (planned) — set values, set config parameters, manage associations.
-3. **Admin/lifecycle** (planned) — inclusion/exclusion, re-interview, network heal, OTA firmware.
+1. **Read-only** (done) — controller info, node listing/detail, values, config parameters.
+2. **Read/write** (done) — set values, set config parameters, manage associations.
+3. **Admin/lifecycle** (mostly done) — inclusion/exclusion, re-interview, network heal, remove failed node. **OTA firmware still pending** (see below).
+
+Mutating tools (levels 2–3) call `client.ensure_writable()` before connecting; setting `ZWAVE_JS_READ_ONLY` (`1`/`true`/`yes`/`on`) locks the server to the read-only tools.
 
 ## Commands
 
@@ -32,6 +34,7 @@ ZWAVE_JS_URL=ws://borg:3002 uv run python -m zwave_js_ui_mcp  # run server (stdi
 
 - Depends on `zwave-js-server-python` (the Home Assistant library) for connection, schema negotiation, and — decisive for level 3 — firmware/heal **progress events**. This pins **Python >= 3.12** (the library's floor).
 - Connection is **per tool call** (open → wait for full-state dump → read → close), matching the stateless MCP style. `client.listen()` must run as a background task for `driver_ready` to fire and for `async_send_command` futures to resolve.
+- Mutating ops fit the per-call model because they are single request→response or fire-and-forget: `set_value`/`set_config` wait for the command result; inclusion/exclusion and network heal only toggle server-side controller state (a later `stop_*` call ends them). **OTA firmware update does not fit** — flashing streams progress over minutes, longer than one tool call, so it's deferred until a persistent-connection design lands. Interactive S2 inclusion (DSK/PIN grant over events) likewise can't complete statelessly; `begin_inclusion` documents this.
 - Configuration-CC (112) values are excluded from `zwave_node_values` and surfaced only by `zwave_node_config`, so parameters aren't reported twice.
 - Server URL via `ZWAVE_JS_URL` (default `ws://localhost:3000`). The WS server needs no auth by default; only the 8091 UI does.
 
