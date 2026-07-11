@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-server-zwave-js-ui"
-version = "0.3.0"
+version = "0.4.0"
 description = "MCP server for Z-Wave device management via the zwave-js-server WebSocket exposed by Z-Wave JS UI"
 readme = "README.md"
 license = "MIT"
