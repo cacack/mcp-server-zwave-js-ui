@@ -13,9 +13,9 @@ populates `client.driver` with the full network state, and fires the
 `driver_ready` event — then read the driver and tear everything down.
 
 Mutating actions (set value/config, associations, lifecycle) live alongside
-the read-only projections. They are gated by `ensure_writable()`, which the
-tool layer calls before opening a connection, so an operator can lock the
-server to read-only with the `ZWAVE_JS_READ_ONLY` env var.
+the read-only projections. `read_only()` reports whether the operator has
+locked the server with `ZWAVE_JS_READ_ONLY`; the tool layer uses it to hide
+the mutating tools from the registry entirely.
 """
 
 from __future__ import annotations
@@ -86,18 +86,6 @@ def server_url() -> str:
 def read_only() -> bool:
     """Whether mutating tools are disabled, per ZWAVE_JS_READ_ONLY."""
     return os.environ.get("ZWAVE_JS_READ_ONLY", "").strip().lower() in _TRUTHY
-
-
-def ensure_writable() -> None:
-    """Raise PermissionError if the server is locked to read-only mode.
-
-    Called by mutating tools before they open a connection, so a lockdown
-    refuses fast and never touches the network.
-    """
-    if read_only():
-        raise PermissionError(
-            "mutating operations are disabled: ZWAVE_JS_READ_ONLY is set"
-        )
 
 
 @asynccontextmanager
@@ -343,17 +331,51 @@ def project_association_address(address: Any) -> dict:
 # --- Actions: mutate the network, return a plain dict describing the outcome ---
 
 
+def _check_writeable(metadata: Any, target: str) -> None:
+    """Raise ValueError if the target's metadata marks it read-only."""
+    if metadata.writeable is False:
+        raise ValueError(f"{target} is not writeable")
+
+
+def _check_numeric_range(metadata: Any, new_value: Any, target: str) -> None:
+    """Raise ValueError if a numeric new_value falls outside metadata min/max.
+
+    Booleans (binary switches) and non-numeric values are left to the device.
+    """
+    if isinstance(new_value, bool) or not isinstance(new_value, (int, float)):
+        return
+    if metadata.min is not None and new_value < metadata.min:
+        raise ValueError(f"{target}: {new_value} is below minimum {metadata.min}")
+    if metadata.max is not None and new_value > metadata.max:
+        raise ValueError(f"{target}: {new_value} is above maximum {metadata.max}")
+
+
 async def set_value(
     driver: Driver, node_id: int, value_id: str, new_value: Any
 ) -> dict:
     """Set a node value by value_id and report the command outcome.
 
-    Raises ValueError if the node id is unknown; the library raises if the
-    value_id is not found on the node or is not writeable.
+    Validates against the value's live metadata: raises ValueError if the node
+    or value_id is unknown, the value is not writeable, or a numeric value is
+    out of the metadata's range.
     """
     node = get_node(driver, node_id)
-    result = await node.async_set_value(value_id, new_value, wait_for_result=True)
+    value = node.values.get(value_id)
+    if value is None:
+        raise ValueError(f"No value {value_id!r} on node {node_id}")
+    target = f"Value {value_id!r}"
+    _check_writeable(value.metadata, target)
+    _check_numeric_range(value.metadata, new_value, target)
+    result = await node.async_set_value(value, new_value, wait_for_result=True)
     return project_set_value_result(result)
+
+
+def _find_config_value(node: Node, parameter: int, bitmask: int | None) -> Any:
+    """The configuration value matching a parameter number and bit mask, or None."""
+    for cv in node.get_configuration_values().values():
+        if cv.property_ == parameter and cv.property_key == bitmask:
+            return cv
+    return None
 
 
 async def set_config_parameter(
@@ -367,13 +389,49 @@ async def set_config_parameter(
 
     `parameter` is the parameter number (the `property` field from
     project_node_config); `bitmask` is the optional partial-parameter bit mask
-    (its `property_key`). Raises ValueError if the node id is unknown.
+    (its `property_key`). Validates against the parameter's live metadata:
+    raises ValueError if the node or parameter is unknown, the parameter is not
+    writeable, or the value is out of range.
     """
     node = get_node(driver, node_id)
+    cv = _find_config_value(node, parameter, bitmask)
+    if cv is None:
+        suffix = f"[{bitmask}]" if bitmask is not None else ""
+        raise ValueError(
+            f"No configuration parameter {parameter}{suffix} on node {node_id}"
+        )
+    target = f"Parameter {parameter}"
+    _check_writeable(cv.metadata, target)
+    _check_numeric_range(cv.metadata, new_value, target)
     result = await node.async_set_raw_config_parameter_value(
         new_value, parameter, bitmask
     )
     return project_set_config_result(result)
+
+
+async def set_node_name(driver: Driver, node_id: int, name: str) -> dict:
+    """Set a node's name."""
+    node = get_node(driver, node_id)
+    await node.async_set_name(name)
+    return {"status": "ok", "node_id": node_id, "name": name}
+
+
+async def set_node_location(driver: Driver, node_id: int, location: str) -> dict:
+    """Set a node's location."""
+    node = get_node(driver, node_id)
+    await node.async_set_location(location)
+    return {"status": "ok", "node_id": node_id, "location": location}
+
+
+def rebuild_routes_status(driver: Driver) -> dict:
+    """Whether a network-wide route rebuild is in progress (from controller state)."""
+    return {"is_rebuilding": driver.controller.is_rebuilding_routes}
+
+
+async def firmware_update_status(driver: Driver) -> dict:
+    """Whether any OTA firmware update is currently in progress."""
+    in_progress = await driver.controller.async_is_firmware_update_in_progress()
+    return {"in_progress": in_progress}
 
 
 async def get_association_groups(

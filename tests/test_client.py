@@ -262,17 +262,6 @@ def test_read_only_falsey_values(monkeypatch, value):
     assert client.read_only() is False
 
 
-def test_ensure_writable_passes_when_unset(monkeypatch):
-    monkeypatch.delenv("ZWAVE_JS_READ_ONLY", raising=False)
-    client.ensure_writable()  # does not raise
-
-
-def test_ensure_writable_raises_when_read_only(monkeypatch):
-    monkeypatch.setenv("ZWAVE_JS_READ_ONLY", "1")
-    with pytest.raises(PermissionError, match="ZWAVE_JS_READ_ONLY"):
-        client.ensure_writable()
-
-
 # --- Result projections ---
 
 
@@ -351,21 +340,35 @@ def _action_driver(node_id=5, controller=None, **node_methods):
     return SimpleNamespace(controller=controller), node
 
 
-async def test_set_value_delegates_and_projects():
-    driver, node = _action_driver(
-        async_set_value=AsyncMock(
-            return_value=SimpleNamespace(
-                status=SimpleNamespace(name="SUCCESS"),
-                message=None,
-                remaining_duration=None,
-            )
+def _writeable_value(**md):
+    """A Value stand-in exposing just the metadata set_value inspects."""
+    return SimpleNamespace(metadata=_metadata(**md))
+
+
+def _cfg_value(prop=3, key=None, **md):
+    """A ConfigurationValue stand-in for set_config_parameter lookups."""
+    return SimpleNamespace(property_=prop, property_key=key, metadata=_metadata(**md))
+
+
+def _set_value_ok():
+    return AsyncMock(
+        return_value=SimpleNamespace(
+            status=SimpleNamespace(name="SUCCESS"),
+            message=None,
+            remaining_duration=None,
         )
+    )
+
+
+async def test_set_value_delegates_and_projects():
+    val = _writeable_value(min=0, max=99)
+    driver, node = _action_driver(
+        values={"5-38-0-targetValue": val}, async_set_value=_set_value_ok()
     )
     result = await client.set_value(driver, 5, "5-38-0-targetValue", 99)
     assert result["status"] == "SUCCESS"
-    node.async_set_value.assert_awaited_once_with(
-        "5-38-0-targetValue", 99, wait_for_result=True
-    )
+    # the resolved Value object is passed, not the value_id string
+    node.async_set_value.assert_awaited_once_with(val, 99, wait_for_result=True)
 
 
 async def test_set_value_unknown_node_raises():
@@ -374,17 +377,107 @@ async def test_set_value_unknown_node_raises():
         await client.set_value(driver, 99, "x", 1)
 
 
-async def test_set_config_parameter_delegates_and_projects():
+async def test_set_value_unknown_value_id_raises():
+    driver, _ = _action_driver(values={}, async_set_value=_set_value_ok())
+    with pytest.raises(ValueError, match="No value 'x-1-0' on node 5"):
+        await client.set_value(driver, 5, "x-1-0", 1)
+
+
+async def test_set_value_unwriteable_raises():
+    val = _writeable_value(writeable=False)
     driver, node = _action_driver(
-        async_set_raw_config_parameter_value=AsyncMock(
-            return_value=SimpleNamespace(
-                status=SimpleNamespace(name="ACCEPTED"), result=None
-            )
+        values={"5-38-0-currentValue": val}, async_set_value=_set_value_ok()
+    )
+    with pytest.raises(ValueError, match="is not writeable"):
+        await client.set_value(driver, 5, "5-38-0-currentValue", 1)
+    node.async_set_value.assert_not_awaited()
+
+
+async def test_set_value_out_of_range_raises():
+    val = _writeable_value(min=0, max=99)
+    driver, node = _action_driver(
+        values={"5-38-0-targetValue": val}, async_set_value=_set_value_ok()
+    )
+    with pytest.raises(ValueError, match="above maximum 99"):
+        await client.set_value(driver, 5, "5-38-0-targetValue", 200)
+    node.async_set_value.assert_not_awaited()
+
+
+async def test_set_value_allows_boolean_regardless_of_range():
+    val = _writeable_value(min=0, max=99, type="boolean")
+    driver, node = _action_driver(
+        values={"5-37-0-targetValue": val}, async_set_value=_set_value_ok()
+    )
+    await client.set_value(driver, 5, "5-37-0-targetValue", True)
+    node.async_set_value.assert_awaited_once_with(val, True, wait_for_result=True)
+
+
+def _set_config_ok():
+    return AsyncMock(
+        return_value=SimpleNamespace(
+            status=SimpleNamespace(name="ACCEPTED"), result=None
         )
+    )
+
+
+async def test_set_config_parameter_delegates_and_projects():
+    cv = _cfg_value(prop=3, min=0, max=100)
+    driver, node = _action_driver(
+        get_configuration_values=lambda: {"5-112-0-3": cv},
+        async_set_raw_config_parameter_value=_set_config_ok(),
     )
     result = await client.set_config_parameter(driver, 5, 3, 10, bitmask=None)
     assert result == {"status": "ACCEPTED", "supervision": None}
     node.async_set_raw_config_parameter_value.assert_awaited_once_with(10, 3, None)
+
+
+async def test_set_config_parameter_unknown_raises():
+    driver, node = _action_driver(
+        get_configuration_values=lambda: {},
+        async_set_raw_config_parameter_value=_set_config_ok(),
+    )
+    with pytest.raises(ValueError, match="No configuration parameter 7 on node 5"):
+        await client.set_config_parameter(driver, 5, 7, 1)
+    node.async_set_raw_config_parameter_value.assert_not_awaited()
+
+
+async def test_set_config_parameter_out_of_range_raises():
+    cv = _cfg_value(prop=3, min=0, max=100)
+    driver, node = _action_driver(
+        get_configuration_values=lambda: {"5-112-0-3": cv},
+        async_set_raw_config_parameter_value=_set_config_ok(),
+    )
+    with pytest.raises(ValueError, match="above maximum 100"):
+        await client.set_config_parameter(driver, 5, 3, 500)
+    node.async_set_raw_config_parameter_value.assert_not_awaited()
+
+
+async def test_set_node_name_delegates():
+    driver, node = _action_driver(async_set_name=AsyncMock(return_value=None))
+    result = await client.set_node_name(driver, 5, "Porch Light")
+    assert result == {"status": "ok", "node_id": 5, "name": "Porch Light"}
+    node.async_set_name.assert_awaited_once_with("Porch Light")
+
+
+async def test_set_node_location_delegates():
+    driver, node = _action_driver(async_set_location=AsyncMock(return_value=None))
+    result = await client.set_node_location(driver, 5, "Porch")
+    assert result == {"status": "ok", "node_id": 5, "location": "Porch"}
+    node.async_set_location.assert_awaited_once_with("Porch")
+
+
+async def test_rebuild_routes_status_reads_controller():
+    controller = SimpleNamespace(is_rebuilding_routes=True)
+    driver, _ = _action_driver(controller=controller)
+    assert client.rebuild_routes_status(driver) == {"is_rebuilding": True}
+
+
+async def test_firmware_update_status_queries_controller():
+    controller = SimpleNamespace(
+        async_is_firmware_update_in_progress=AsyncMock(return_value=False)
+    )
+    driver, _ = _action_driver(controller=controller)
+    assert await client.firmware_update_status(driver) == {"in_progress": False}
 
 
 async def test_get_association_groups_projects_each():

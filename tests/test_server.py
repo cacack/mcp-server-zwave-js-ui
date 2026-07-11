@@ -41,34 +41,28 @@ def writable(monkeypatch):
     monkeypatch.delenv("ZWAVE_JS_READ_ONLY", raising=False)
 
 
+_READ_ONLY_TOOLS = {
+    "zwave_controller_info",
+    "zwave_list_nodes",
+    "zwave_node_info",
+    "zwave_node_values",
+    "zwave_node_config",
+    "zwave_rebuild_routes_status",
+    "zwave_firmware_update_status",
+    "zwave_association_groups",
+    "zwave_associations",
+}
+
+
 async def test_expected_tools_are_registered():
-    tools = await server.mcp.list_tools()
-    names = {t.name for t in tools}
-    assert names == {
-        # read-only (level 1)
-        "zwave_controller_info",
-        "zwave_list_nodes",
-        "zwave_node_info",
-        "zwave_node_values",
-        "zwave_node_config",
-        # write control (level 2)
-        "zwave_set_value",
-        "zwave_set_config_parameter",
-        "zwave_association_groups",
-        "zwave_associations",
-        "zwave_add_association",
-        "zwave_remove_association",
-        # admin / lifecycle (level 3)
-        "zwave_reinterview_node",
-        "zwave_rebuild_node_routes",
-        "zwave_begin_rebuilding_routes",
-        "zwave_stop_rebuilding_routes",
-        "zwave_remove_failed_node",
-        "zwave_begin_inclusion",
-        "zwave_stop_inclusion",
-        "zwave_begin_exclusion",
-        "zwave_stop_exclusion",
-    }
+    names = {t.name for t in await server.mcp.list_tools()}
+    assert names == _READ_ONLY_TOOLS | server._MUTATING_TOOLS
+
+
+async def test_read_only_and_mutating_sets_are_disjoint():
+    # Every registered tool is classified exactly once, so a new mutating tool
+    # can't silently escape the read-only gate.
+    assert _READ_ONLY_TOOLS.isdisjoint(server._MUTATING_TOOLS)
 
 
 async def test_controller_info_delegates_to_projection(patched_driver, monkeypatch):
@@ -98,6 +92,21 @@ async def test_set_value_delegates(patched_driver, monkeypatch):
     set_value.assert_awaited_once_with(patched_driver, 5, "5-38-0-targetValue", 99)
 
 
+async def test_set_node_name_delegates(patched_driver, monkeypatch):
+    set_name = AsyncMock(return_value={"status": "ok"})
+    monkeypatch.setattr(server.client, "set_node_name", set_name)
+    result = await server.zwave_set_node_name(5, "Porch Light")
+    assert result == {"status": "ok"}
+    set_name.assert_awaited_once_with(patched_driver, 5, "Porch Light")
+
+
+async def test_firmware_update_status_delegates(patched_driver, monkeypatch):
+    status = AsyncMock(return_value={"in_progress": False})
+    monkeypatch.setattr(server.client, "firmware_update_status", status)
+    assert await server.zwave_firmware_update_status() == {"in_progress": False}
+    status.assert_awaited_once_with(patched_driver)
+
+
 async def test_begin_inclusion_delegates(patched_driver, monkeypatch):
     begin = AsyncMock(return_value={"status": "inclusion_started"})
     monkeypatch.setattr(server.client, "begin_inclusion", begin)
@@ -106,23 +115,25 @@ async def test_begin_inclusion_delegates(patched_driver, monkeypatch):
     begin.assert_awaited_once_with(patched_driver, "s2")
 
 
-async def test_read_only_blocks_mutating_tool(monkeypatch):
+@pytest.fixture
+def restore_registry():
+    """Snapshot and restore the tool registry around a read-only mutation."""
+    saved = dict(server.mcp._tool_manager._tools)
+    yield
+    server.mcp._tool_manager._tools.clear()
+    server.mcp._tool_manager._tools.update(saved)
+
+
+async def test_read_only_hides_mutating_tools(monkeypatch, restore_registry):
     monkeypatch.setenv("ZWAVE_JS_READ_ONLY", "1")
-    # Fail loudly if the gate lets execution reach the connection.
-    monkeypatch.setattr(server.client, "connected_driver", _should_not_connect)
-    with pytest.raises(PermissionError, match="ZWAVE_JS_READ_ONLY"):
-        await server.zwave_set_value(5, "x", 1)
+    server._apply_read_only()
+    names = {t.name for t in await server.mcp.list_tools()}
+    assert names == _READ_ONLY_TOOLS
+    assert names.isdisjoint(server._MUTATING_TOOLS)
 
 
-async def test_read_only_allows_reads(monkeypatch, patched_driver):
-    monkeypatch.setenv("ZWAVE_JS_READ_ONLY", "1")
-    monkeypatch.setattr(
-        server.client, "project_node_summary", lambda n: {"node_id": n.node_id}
-    )
-    assert await server.zwave_list_nodes() == [{"node_id": 5}]
-
-
-@asynccontextmanager
-async def _should_not_connect():
-    raise AssertionError("read-only gate should block before connecting")
-    yield  # pragma: no cover
+async def test_apply_read_only_is_noop_when_writable(restore_registry):
+    before = {t.name for t in await server.mcp.list_tools()}
+    server._apply_read_only()  # writable fixture leaves ZWAVE_JS_READ_ONLY unset
+    after = {t.name for t in await server.mcp.list_tools()}
+    assert before == after == _READ_ONLY_TOOLS | server._MUTATING_TOOLS
