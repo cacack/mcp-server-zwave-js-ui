@@ -15,11 +15,10 @@ Scope is delivered in levels:
 ## Commands
 
 ```bash
-uv venv --python 3.13 && source .venv/bin/activate
-uv pip install -e ".[dev]"
-pytest
-ruff check . && ruff format --check .
-ZWAVE_JS_URL=ws://borg:3002 python -m zwave_js_ui_mcp  # run server (stdio)
+uv sync --extra dev            # create .venv from uv.lock (matches CI's --locked)
+uv run pytest
+uv run ruff check . && uv run ruff format --check .
+ZWAVE_JS_URL=ws://borg:3002 uv run python -m zwave_js_ui_mcp  # run server (stdio)
 ```
 
 ## Architecture

@@ -104,10 +104,9 @@ Or add it to an MCP client config directly:
 ```bash
 git clone https://github.com/cacack/mcp-server-zwave-js-ui
 cd mcp-server-zwave-js-ui
-uv venv --python 3.13 && source .venv/bin/activate
-uv pip install -e ".[dev]"
-pytest
-ruff check . && ruff format --check .
+uv sync --extra dev            # create .venv from the checked-in uv.lock
+uv run pytest
+uv run ruff check . && uv run ruff format --check .
 ```
 
 See [CLAUDE.md](CLAUDE.md) for architecture and design notes.
