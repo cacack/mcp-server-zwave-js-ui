@@ -47,6 +47,7 @@ ZWAVE_JS_URL=ws://<host>:3000 uv run python -m zwave_js_ui_mcp  # run server (st
 - `main` is protected by a ruleset requiring PRs (0 approvals) with the **`CI Success`** and **GitGuardian** checks green — no direct pushes. Work on a branch, open a PR, self-merge when green.
 - `CI Success` is the aggregate job in `.github/workflows/ci.yml` (test matrix + lint + dependency-review). The required check is that job's name.
 - Releases/PyPI publish via release-please (`release-please.yml`, App-token auth) + a tag-triggered `release.yml` that publishes to PyPI via trusted publishing. **One-time setup required before publishing works:** a dedicated GitHub App (contents + pull-requests write) installed on the repo with its `RELEASE_PLEASE_APP_CLIENT_ID` + `RELEASE_PLEASE_APP_PRIVATE_KEY` repo secrets, a PyPI trusted-publisher pointing at `release.yml`'s `publish-pypi` job, and a `pypi` GitHub environment. Until configured, release automation is inactive but does not block PRs.
+- **uv.lock on release PRs:** release-please bumps the version in `pyproject.toml`/`__init__.py` but not `uv.lock`, whose own-project version then goes stale and fails CI's `uv sync --locked`. `release-please.yml` has a follow-up step that checks out the release branch, runs `uv lock`, and commits the refreshed lock, so the release PR (and `main` after merge) stays `--locked`-clean. Any change to how the lock or version is tracked must keep these in sync.
 
 ## Testing
 
