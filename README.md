@@ -12,10 +12,11 @@ the `zwave-js-server` WebSocket that Z-Wave JS UI exposes and surfaces the mesh
 client (e.g. Claude) can call.
 
 > **Status: early / read + write + lifecycle.** Read-only introspection, write
-> control (values, config parameters, associations), and admin/lifecycle
-> operations (re-interview, route rebuild, inclusion/exclusion, remove failed
-> node) are available. Set `ZWAVE_JS_READ_ONLY` to lock the server to the
-> read-only tools. OTA firmware update is still on the [roadmap](#roadmap).
+> control (values, config parameters, node name/location, associations), and
+> admin/lifecycle operations (re-interview, route rebuild, inclusion/exclusion,
+> remove failed node) are available. Set `ZWAVE_JS_READ_ONLY` to hide every
+> mutating tool and expose only the read tools. Triggering an OTA firmware
+> update is still on the [roadmap](#roadmap).
 
 ## Quickstart
 
@@ -63,7 +64,7 @@ uvx mcp-server-zwave-js-ui
 | Variable             | Default               | Description                                                        |
 |----------------------|-----------------------|--------------------------------------------------------------------|
 | `ZWAVE_JS_URL`       | `ws://localhost:3000` | WebSocket URL of the Z-Wave JS Server.                             |
-| `ZWAVE_JS_READ_ONLY` | *(unset)*             | Set to `1`/`true`/`yes`/`on` to disable all write and admin tools. |
+| `ZWAVE_JS_READ_ONLY` | *(unset)*             | Set to `1`/`true`/`yes`/`on` to hide all write and admin tools (only the read tools are registered). |
 
 ## Use with Claude Code
 
@@ -89,8 +90,8 @@ Or add it to an MCP client config directly:
 
 ## Tools
 
-Write and admin tools (everything below the read-only rows) are gated by
-`ZWAVE_JS_READ_ONLY`; with it set they refuse before touching the network.
+Write and admin tools (everything below the read-only rows) are hidden from the
+registry when `ZWAVE_JS_READ_ONLY` is set.
 
 ### Read-only
 
@@ -103,13 +104,17 @@ Write and admin tools (everything below the read-only rows) are gated by
 | `zwave_node_config`      | A node's configuration parameters with current values and metadata. |
 | `zwave_association_groups` | A node's association groups and their capabilities.             |
 | `zwave_associations`     | A node's current associations, keyed by group.                    |
+| `zwave_rebuild_routes_status` | Whether a network-wide route rebuild (heal) is in progress.  |
+| `zwave_firmware_update_status` | Whether an OTA firmware update is in progress.              |
 
 ### Write control (level 2)
 
 | Tool                       | Description                                                      |
 |----------------------------|------------------------------------------------------------------|
-| `zwave_set_value`          | Set a value by id (on/off/dim/etc.) and report the command outcome. |
+| `zwave_set_value`          | Set a value by id (on/off/dim/etc.); validated against live metadata. |
 | `zwave_set_config_parameter` | Set a manufacturer configuration parameter (optional bit mask). |
+| `zwave_set_node_name`      | Set a node's friendly name.                                     |
+| `zwave_set_node_location`  | Set a node's location label.                                    |
 | `zwave_add_association`    | Associate a target node into a source node's group.             |
 | `zwave_remove_association` | Remove a target node from a source node's group.                |
 
@@ -130,9 +135,10 @@ Write and admin tools (everything below the read-only rows) are gated by
 
 ## Roadmap
 
-- **OTA firmware update.** Firmware flashing streams progress events over
-  minutes, which the per-call connection model can't observe within a single
-  tool call; delivering it needs a persistent-connection design.
+- **Trigger OTA firmware updates.** Reporting update status is available
+  (`zwave_firmware_update_status`), but starting a flash streams progress events
+  over minutes, which the per-call connection model can't observe within a
+  single tool call; delivering it needs a persistent-connection design.
 
 ## Development
 
