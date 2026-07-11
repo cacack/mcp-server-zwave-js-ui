@@ -20,7 +20,7 @@ Mutating tools (levels 2–3) call `client.ensure_writable()` before connecting;
 uv sync --extra dev            # create .venv from uv.lock (matches CI's --locked)
 uv run pytest
 uv run ruff check . && uv run ruff format --check .
-ZWAVE_JS_URL=ws://borg:3002 uv run python -m zwave_js_ui_mcp  # run server (stdio)
+ZWAVE_JS_URL=ws://<host>:3000 uv run python -m zwave_js_ui_mcp  # run server (stdio)
 ```
 
 ## Architecture

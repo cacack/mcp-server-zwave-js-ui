@@ -238,8 +238,8 @@ def test_server_url_defaults(monkeypatch):
 
 
 def test_server_url_from_env(monkeypatch):
-    monkeypatch.setenv("ZWAVE_JS_URL", "ws://borg:3002")
-    assert client.server_url() == "ws://borg:3002"
+    monkeypatch.setenv("ZWAVE_JS_URL", "ws://zwave.example:3000")
+    assert client.server_url() == "ws://zwave.example:3000"
 
 
 # --- Read-only gate ---

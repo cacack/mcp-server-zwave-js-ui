@@ -69,7 +69,7 @@ uvx mcp-server-zwave-js-ui
 
 ```bash
 claude mcp add zwave-js-ui \
-  --env ZWAVE_JS_URL=ws://borg:3002 \
+  --env ZWAVE_JS_URL=ws://<host>:3000 \
   -- uvx mcp-server-zwave-js-ui
 ```
 
@@ -81,7 +81,7 @@ Or add it to an MCP client config directly:
     "zwave-js-ui": {
       "command": "uvx",
       "args": ["mcp-server-zwave-js-ui"],
-      "env": { "ZWAVE_JS_URL": "ws://borg:3002" }
+      "env": { "ZWAVE_JS_URL": "ws://<host>:3000" }
     }
   }
 }
