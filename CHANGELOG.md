@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/cacack/mcp-server-zwave-js-ui/compare/v0.4.0...v0.4.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* **deps:** cap mcp below 2.0 ([7ffb548](https://github.com/cacack/mcp-server-zwave-js-ui/commit/7ffb548199665d7f040a6100c0d5dd2db8084c2f))
+
 ## [0.4.0](https://github.com/cacack/mcp-server-zwave-js-ui/compare/v0.3.0...v0.4.0) (2026-07-11)
 
 
